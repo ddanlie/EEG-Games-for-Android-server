@@ -1,0 +1,14 @@
+# Virtual environment
+.venv/
+.venv-win/
+utils/
+venv/
+ENV/
+
+# Environment variables
+.env
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
