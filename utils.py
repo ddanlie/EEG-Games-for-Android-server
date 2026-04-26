@@ -12,7 +12,6 @@ from config import (
     GOOGLE_SMTP_APP_PASSWORD,
 )
 
-
 # Call example: sv_to_tsv("input.csv", "output.tsv")
 def csv_to_tsv(input_path, output_path):
     with open(input_path, newline='', encoding='utf-8') as fin, \
@@ -78,5 +77,4 @@ def generate_infinite_jwt_token(data: dict={}) -> str:
 
 def generate_jwt_secret() -> str:
     return secrets.token_hex(32)
-
 
