@@ -114,8 +114,6 @@ def update_login_code(userId: str, code: str):
         conn.close()
 
 #TODO:
-def add_eeg_game():
-    pass
 
 def delete_eeg_game():
     pass
@@ -131,8 +129,12 @@ def create_signle_run_session(
 ):
     conn = get_conn()
     try:
-        session_id = str(uuid4())
         cursor = conn.cursor()
+        cursor.execute("SELECT * FROM sessions WHERE bids_session_number = ?", (session_bids_number,))
+        row = cursor.fetchone()
+        if row: #such session already exists
+            return
+        session_id = str(uuid4())
         cursor.execute(
             """
             INSERT INTO sessions (
@@ -150,23 +152,20 @@ def create_signle_run_session(
             )
             VALUES (?,?,?,?,?,?,?)
             """,
-            (str(uuid4()), get_game_by_name(session_name)["id"], session_id, "01", datetime.now(timezone.utc), 1, "") # number is always 01 here
+            (str(uuid4()), get_game_by_name(session_name)["id"], session_id, 1, datetime.now(timezone.utc), 1, "") # number is always 01 here
         )
         conn.commit()
     finally:
         conn.close()
 
-
-def get_game_by_name(game_name:str) -> dict | None:
+def delete_signle_run_session(session_id:str):
     conn = get_conn()
     try:
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM games WHERE name = ?", (game_name,))
-        row = cursor.fetchone()
-        return dict(row) if row else None
+        cursor.execute("DELETE FROM runs WHERE session_id = ?", (session_id,))
+        cursor.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
     finally:
         conn.close()
-
 
 def create_game(name:str, description:str, attention_domain:str, attention_subdomain:str, other_info_json:dict):
     conn = get_conn()
@@ -179,7 +178,7 @@ def create_game(name:str, description:str, attention_domain:str, attention_subdo
             INSERT INTO games (
                 id, name, description, attention_domain, attention_subdomain, other_info_json
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
             (game_id, name, description, attention_domain, attention_subdomain, json.dumps(other_info_json))
         )
@@ -193,11 +192,12 @@ def delete_game(id):
     try:
         cursor = conn.cursor()
         cursor.execute("DELETE FROM games WHERE id = ?", (id,))
+        conn.commit()
     finally:
         conn.close()
 
 
-def create_run_observation(run_id:str, biomarkers_json_data):
+def create_observation(run_id:str, biomarkers_json_data: dict):
     conn = get_conn()
     try:
         observation_id = str(uuid4())
@@ -205,7 +205,7 @@ def create_run_observation(run_id:str, biomarkers_json_data):
         cursor = conn.cursor()
         cursor.execute(
             """
-            INSERT INTO observation (
+            INSERT INTO observations (
                 id, run_id, biomarkers_json_data
             )
             VALUES (?, ?, ?)
@@ -213,5 +213,62 @@ def create_run_observation(run_id:str, biomarkers_json_data):
             (observation_id, run_id, json.dumps(biomarkers_json_data))
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def get_session_by_bids_number(session_bids_number: str) -> dict | None:
+    conn = get_conn()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM sessions WHERE bids_session_number = ?", (session_bids_number,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    except Exception as e:
+        return None
+    finally:
+        conn.close()
+    
+
+def get_game_by_name(game_name: str) -> dict | None:
+    conn = get_conn()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM games WHERE name = ?", (game_name,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    except Exception as e:
+        return None
+    finally:
+        conn.close()
+
+def get_single_session_run(game_id: str, session_id: str):
+    conn = get_conn()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM runs WHERE game_id = ? AND session_id = ?", (game_id, session_id))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    except Exception as e:
+        return None
+    finally:
+        conn.close()
+
+def get_user_session_runs(user_id: str) -> list[dict]:
+    conn = get_conn()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT runs.* FROM runs
+            JOIN sessions ON runs.session_id = sessions.id
+            WHERE sessions.user_id = ?
+            """,
+            (user_id,)
+        )
+        rows = cursor.fetchall()
+        return [dict(row) for row in rows] if rows else []
+    except Exception as e:
+        return []
     finally:
         conn.close()

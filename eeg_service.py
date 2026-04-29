@@ -1,14 +1,18 @@
 import mne_bids_pipeline_config_current
+import pandas as pd
 import os
+import sys
 import shutil
 import asyncio
+
 import subprocess
 from pathlib import Path
 from datetime import datetime, timezone
 import mne
 import pandas as pd
+from mne_bids import BIDSPath, write_raw_bids
 import numpy as np
-from pydantic import UploadFile
+from fastapi import UploadFile
 from config import (
     BIDS_DB_PATH,
     EEG_SAMPLING_RATE
@@ -17,11 +21,14 @@ from utils import (
     csv_to_tsv
 )
 from dbservice import (
-    create_signle_run_session,
-    create_run_observation,
+    create_observation,
     get_user_by_id,
+    get_session_by_bids_number,
+    get_game_by_name,
+    get_single_session_run,
 )
 
+EXG_LSB = 0.045
 
 CHANNELS = {
     "channel_1":{
@@ -33,15 +40,15 @@ CHANNELS = {
         "region_approx": "frontal"
     },
     "channel_3":{
-        "name": "C1",
+        "name": "C5",
         "region_approx": "parietal" # least relevant
     },
     "channel_4":{
-        "name": "C2",
+        "name": "C1",
         "region_approx": "parietal" # least relevant
     },
     "channel_5":{
-        "name": "C5",
+        "name": "C2",
         "region_approx": "temporal" 
     },
     "channel_6":{
@@ -65,10 +72,6 @@ CONDITIONS = {
 
     "ERP_N1": {
         
-    },
-
-    "ERP_P300": {
-
     },
 
     "ERP_N170": {
@@ -99,6 +102,9 @@ CONDITIONS = {
 def bids_subject_exists(subject_label: str) -> bool:
     return (Path(BIDS_DB_PATH) / f"sub-{subject_label}").is_dir()
 
+def bids_single_run_session_exists(subject_label: str, session_label: str) -> bool:
+    path = Path(BIDS_DB_PATH) / f"sub-{subject_label}" / f"ses-{session_label}"
+    return path.exists()
 
 def add_bids_subject(subject_label: str) -> bool:
     path = Path(BIDS_DB_PATH) / f"sub-{subject_label}"
@@ -113,16 +119,14 @@ def add_bids_single_run_session(subject_label: str, session_label: str) -> bool:
     
     # Folders
     path = Path(BIDS_DB_PATH) / f"sub-{subject_label}" / f"ses-{session_label}"
+    subpaths = [path / "raw", path / "eeg"]
+
     if path.exists():
         return True
     path.mkdir(parents=True)
+    for sbpth in subpaths:
+        sbpth.mkdir()
  
-    # Database
-    user_id, user_bids_number = get_user_id_bids_number(subject_label)
-    session_name, session_bids_number = get_session_name_bids_number(session_label)
-    create_signle_run_session(user_id, session_name, session_bids_number)
-    
-
     return True
 
 def delete_bids_single_run_session(subject_label: str,  session_label: str):
@@ -158,12 +162,15 @@ async def convert_raw_data_and_save_clean(input_filename_with_extension: str, su
     }
     input_path = Path(BIDS_DB_PATH) / f"sub-{subject_label}" / f"ses-{session_label}" / "raw" / input_filename_with_extension
     output_path = Path(BIDS_DB_PATH) / f"sub-{subject_label}" / f"ses-{session_label}" / "eeg" / get_bids_filename_with_extension(subject_label, session_label, datatype)
-    if not input_path.exists() or not output_path.exists():
+    if not input_path.exists():
         return False
     if datatype == "eeg":
         eeg_tsv_path = Path(str(input_path).replace(".csv", ".tsv"))
+        events_tsv_path = Path(BIDS_DB_PATH) \
+            / f"sub-{subject_label}" / f"ses-{session_label}" / "eeg" / \
+            get_bids_filename_with_extension(subject_label, session_label, "events")
         await asyncio.to_thread(csv_to_tsv, input_path, eeg_tsv_path)
-        await asyncio.to_thread(eeg_tsv_map_channels_set_cols, eeg_tsv_path, output_path)
+        await asyncio.to_thread(eeg_tsv_map_channels_set_cols, eeg_tsv_path, events_tsv_path, output_path, subject_label, session_label)
     elif datatype == "events":
         await asyncio.to_thread(csv_to_tsv, input_path, output_path)
     elif datatype == "gameSettings":
@@ -190,45 +197,113 @@ def get_bids_filename_with_extension(subject_label:str, session_label:str, datat
         "events": "events.tsv",
         "gameSettings": "eeg.json",
         #output
-        "resultProcCleanEpo": "proc_clean_epo.fif",
+        "resultProcCleanEpo": "proc-clean_epo.fif",
         "resultProcFiltRaw": "proc-filt_raw.fif",
         #reference
-        "microstatesReference": "microstates_reference.mat"
+        "microstatesReference": "microstates_reference.mat",
     }
     if datatype == "microstatesReference":
         return t["microstatesReference"]
-    return f"sub-{subject_label}_ses-{session_label}_task-{session_label}_run-01_{t[datatype]}"
+    if datatype == "resultProcCleanEpo":
+        return f"sub-{subject_label}_ses-{session_label}_task-common_{t[datatype]}" 
+    return f"sub-{subject_label}_ses-{session_label}_task-common_run-01_{t[datatype]}"
 
-def eeg_tsv_map_channels_set_cols(eeg_tsv_path, output_path):
+def eeg_tsv_map_channels_set_cols(eeg_tsv_path, eeg_events_tsv_path, output_path, subject_label, session_label):
     eeg = pd.read_csv(eeg_tsv_path, sep="\t")[CHANNELS.keys()]
-
+    events = pd.read_csv(eeg_events_tsv_path, sep="\t")
+    annotations = mne.Annotations(
+        onset=events["onset"].values,
+        duration=events["duration"].values,
+        description=events["trial_type"].astype(str).values
+    )
     info = mne.create_info(
-        ch_names=list(eeg.columns),
+        ch_names=[data["name"] for ch, data in CHANNELS.items()],
         sfreq=EEG_SAMPLING_RATE,
         ch_types="eeg"
     )
-    raw = mne.io.RawArray(eeg.T.values, info)
-    raw.save(output_path, overwrite=True)
+    raw = mne.io.RawArray(eeg.T.values * EXG_LSB / float(1e6), info)# [Volts]
+    raw.set_annotations(annotations)
+    # raw.save(output_path, overwrite=True)
+
+
+    bids_path = BIDSPath(
+        subject=subject_label,
+        session=session_label,
+        task="common",             
+        run="01",
+        datatype="eeg",
+        root=BIDS_DB_PATH
+    )
+
+    write_raw_bids(
+        raw,
+        bids_path=bids_path,
+        overwrite=True,
+        format="EDF",
+        allow_preload=True,
+    )
+
+
 
 # MNE BIDS PIPELINE
 def analyse_files(subject_label:str, session_label:str) -> bool:
     # modify config
     derivatives_root = f"{BIDS_DB_PATH}\\derivatives\\mne-bids-pipeline"
-    mne_bids_pipeline_config_current.bids_root = BIDS_DB_PATH
-    mne_bids_pipeline_config_current.deriv_root = derivatives_root
-    mne_bids_pipeline_config_current.sessions = [session_label]
-    mne_bids_pipeline_config_current.task = session_label
-    mne_bids_pipeline_config_current.runs = ["01"]
-    mne_bids_pipeline_config_current.subjects = [subject_label]
-    mne_bids_pipeline_config_current.conditions = CONDITIONS.keys()
 
+    configs_path = Path(f"{BIDS_DB_PATH}") / f"sub-{subject_label}" / f"ses-{session_label}" / "eeg"
+    base_config_path = configs_path / "mne_config_base.py"
+    current_config_path = configs_path / "mne_config.py"
+
+    shutil.copy("./mne_bids_pipeline_config_base.py", base_config_path)
+
+    events_tsv_path = Path(BIDS_DB_PATH) \
+            / f"sub-{subject_label}" / f"ses-{session_label}" / "eeg" / \
+            get_bids_filename_with_extension(subject_label, session_label, "events")
+    events = pd.read_csv(events_tsv_path, sep="\t")
+    conditions = sorted(events["trial_type"].unique())
+
+    current_config_path.write_text(f"""
+import os
+import sys
+from pathlib import Path
+
+# Insert this dir so pipeline module can see it
+base_config_dir = Path(__file__).parent.resolve()
+sys.path.insert(0, str(base_config_dir))
+
+from mne_config_base import *
+
+bids_root = r"{BIDS_DB_PATH}"
+deriv_root = r"{derivatives_root}"
+sessions = ["{session_label}"]
+task = "common"
+runs = ["01"]
+subjects = ["{subject_label}"]
+conditions = {conditions}
+notch_freq = [25, 50, 100, 150]
+epochs_tmin = -0.2
+epochs_tmax = 1.2
+""", encoding="utf-8"
+)
+
+    # mne_bids_pipeline_config_current.bids_root = BIDS_DB_PATH
+    # mne_bids_pipeline_config_current.deriv_root = derivatives_root
+    # mne_bids_pipeline_config_current.sessions = [session_label]
+    # mne_bids_pipeline_config_current.task = session_label
+    # mne_bids_pipeline_config_current.runs = ["01"]
+    # mne_bids_pipeline_config_current.subjects = [subject_label]
+    # mne_bids_pipeline_config_current.conditions = CONDITIONS.keys()
+
+    env = os.environ.copy()
+    env["PYTHONUTF8"] = "1"
     # run the pipeline
     with open("pipeline.output", "w") as out_file, open("pipeline.error", "w") as err_file:
         result = subprocess.run(
-            ["mne_bids_pipeline", "--config=./pipeline_config_current.py"],
+            ["mne_bids_pipeline", f"--config={str(current_config_path)}"],
             stdout=out_file,
             stderr=err_file,
-            text=True
+            text=True,
+            env=env
         )
 
     print("PIPELINE Return code:", result.returncode)
@@ -261,7 +336,7 @@ def mne_pipeline_results_analysis(subject_label:str, session_label:str, results_
     evokeds = {}
     for erp_event in epochs.event_id:
         evokeds[erp_event] = epochs[erp_event].average() 
-    tmin, tmax = 0.1, 0.6 # [seconds] (safe window for all ERPs)
+    tmin, tmax = 0.1, 0.8 # [seconds] (safe window for all ERPs)
 
     # Average amplitudes per event shape: (event_count, )
     for erp_event, event_avg_samples_per_channel in evokeds.items():
@@ -283,33 +358,32 @@ def mne_pipeline_results_analysis(subject_label:str, session_label:str, results_
 
     region_map = {}
     ch_names = epochs.ch_names
-    for file_ch_name, device_ch_data in CHANNELS.items():
+    for _, device_ch_data in CHANNELS.items():
         region = device_ch_data["region_approx"]
-
-        if file_ch_name in ch_names:
-            idx = ch_names.index(file_ch_name)
+        
+        if device_ch_data["name"] in ch_names:
+            idx = ch_names.index(device_ch_data["name"])
             region_map.setdefault(region, []).append(idx)
 
     psd = epochs.compute_psd(fmin=1, fmax=60)
     data = psd.get_data()  # shape: (epochs, channels, freqs)
     freqs = psd.freqs
 
+    for epoch_idx in range(data.shape[0]):
+        epoch_data = data[epoch_idx]  # shape: (channels, freqs)
+        result_band_powers[epoch_idx] = {}
 
-    for band, (fmin, fmax) in bands.items():
-        idx = (freqs >= fmin) & (freqs <= fmax)
+        for band, (fmin, fmax) in bands.items():
+            freq_idx = (freqs >= fmin) & (freqs <= fmax)
+            band_ch = epoch_data[:, freq_idx].mean(axis=1)  # (channels, )
+            result_band_powers[epoch_idx][band] = {}
 
-        # collapse everything except channels
-        band_ch = data[:, :, idx].mean(axis=(0, 2))  # (channels, )
-
-        result_band_powers[band] = {}
-
-        for region, ch_indices in region_map.items():
-            result_band_powers[band][region] = band_ch[ch_indices].mean()
-
+            for region, ch_indices in region_map.items():
+                result_band_powers[epoch_idx][band][region] = band_ch[ch_indices].mean()
     
 
 
-    
+    result_microstates_stats = {}
     # Check if reference map file exists
     subject_folder_path = Path(f"{BIDS_DB_PATH}\\sub-{subject_label}")
     reference_file_path = subject_folder_path / get_bids_filename_with_extension(subject_label, session_label, "microstatesReference")
@@ -320,14 +394,19 @@ def mne_pipeline_results_analysis(subject_label:str, session_label:str, results_
         gfp_peaks = extract_gfp_peaks(raw)
         # TODO: finish using read_results.ipynb in mne tests folder
 
+    # result_erp_amplitudes - dict # result: erp event name -> mean value
+    # result_band_powers - dict # result: band -> region -> single value
     biomarkers_json_data = {
-
+        "erp_amplitudes": result_erp_amplitudes,
+        "band_powers": result_band_powers,
+        "microstates_stats": result_microstates_stats
     }
     db_user_id = get_user_id_bids_number(subject_label)[0]
-    db_session_bids_number = get_session_name_bids_number(session_label)[1]
-    create_run_observation()
-    # result_erp_amplitudes = {} # result: erp event name -> mean value
-    # result_band_powers = {} # result: band -> region -> single value
+    game_name, db_session_bids_number = get_session_name_bids_number(session_label)
+    session  = get_session_by_bids_number(db_session_bids_number)
+    game = get_game_by_name(game_name)
+    session_run = get_single_session_run(game["id"], session["id"]) #type: ignore
+    create_observation(session_run["id"], biomarkers_json_data) #type: ignore
 
 
 # TODO: finish using read_results.ipynb in mne tests folder

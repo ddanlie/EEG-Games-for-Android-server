@@ -93,18 +93,5 @@ async def accept_recorded_run_data(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server error: Couldn't convert or copy files on disk")    
 
     background_tasks.add_task(analyse_files, subject_label, session_label)
-    # try:
-    #     await save_raw_file(events, subject_label, session_label, "events.csv")
-    #     await save_raw_file(eegData, subject_label, session_label, "eeg_data.csv")
-    #     await save_raw_file(gameSettings, subject_label, session_label, "game_settings.json")
-
-    #     # await your conversion
-    #     await convert_raw_data_and_save_clean("events.csv", subject_label, session_label, "eeg")
-    #     await convert_raw_data_and_save_clean("eeg_data.csv", subject_label, session_label, "events")
-    #     await convert_raw_data_and_save_clean("game_settings.json", subject_label, session_label, "gameSettings")
-    # except Exception as e:
-    #     raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server error: Couldn't convert or copy files on disk")
-    #     pass
-
 
     return

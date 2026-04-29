@@ -2,6 +2,7 @@
 from typing import Union
 from uuid import uuid4
 import jwt
+import traceback
 from config import (
     JWT_SECRET
 )
@@ -12,6 +13,8 @@ from models import (
     EmailCodeRequest
 )
 from dbservice import (
+    create_signle_run_session,
+    delete_signle_run_session,
     get_user_by_email,
     get_user_by_id,
     add_new_user,
@@ -23,9 +26,12 @@ from utils import (
     send_code_to_email,
 )
 from eeg_service import (
+    get_user_id_bids_number,
+    get_session_name_bids_number,
     bids_subject_exists,
     add_bids_subject,
     add_bids_single_run_session,
+    bids_single_run_session_exists,
     delete_bids_single_run_session,
     save_raw_file,
     convert_raw_data_and_save_clean,
@@ -76,6 +82,12 @@ def app_login_token(token:str) -> UserIdentity | None:
 async def app_accept_recorded_run_data(subject_label, session_label, events, eegData, gameSettings) -> bool:
     
     add_bids_subject(subject_label)
+    if bids_single_run_session_exists(subject_label, session_label):
+        # Database
+        user_id, user_bids_number = get_user_id_bids_number(subject_label)
+        session_name, session_bids_number = get_session_name_bids_number(session_label)
+        create_signle_run_session(user_id, session_name, session_bids_number)
+    # BIDS
     add_bids_single_run_session(subject_label, session_label)
 
     try:
@@ -94,18 +106,29 @@ async def app_accept_recorded_run_data(subject_label, session_label, events, eeg
 
 async def app_process_recorded_run_data(subject_label, session_label) -> bool:
     add_bids_subject(subject_label)
+    # Database
+    user_id, user_bids_number = get_user_id_bids_number(subject_label)
+    session_name, session_bids_number = get_session_name_bids_number(session_label)
+    create_signle_run_session(user_id, session_name, session_bids_number)
     add_bids_single_run_session(subject_label, session_label)
-    try:
-        await convert_raw_data_and_save_clean("events.csv", subject_label, session_label, "eeg")
-        await convert_raw_data_and_save_clean("eeg_data.csv", subject_label, session_label, "events")
+    try: #will fail if first time run, need to add those files
+        #events first, then eeg data!
+        await convert_raw_data_and_save_clean("events.csv", subject_label, session_label, "events")
+        print(f"APP: events OK")
+        await convert_raw_data_and_save_clean("eeg_data.csv", subject_label, session_label, "eeg")
+        print(f"APP: EEG OK")
         await convert_raw_data_and_save_clean("game_settings.json", subject_label, session_label, "gameSettings")
+        print(f"APP: SETTINGS OK")
     except Exception as e:
+        print(f"APP: exception {e}")
+        print(traceback.print_exc())
         return False
     
     return True
 
 async def app_process_and_analyse_single_session(subject_label, session_label) -> bool:
     if not await app_process_recorded_run_data(subject_label, session_label):
+        print("APP: process run data failed")
         return False
     
     return analyse_files(subject_label, session_label)
