@@ -65,37 +65,55 @@ CHANNELS = {
     },
 }
 
+# tmin, tmax [seconds] - see mne confing definitions
 CONDITIONS = {
-    "ERP_P1": {
-        
-    },
+  "ERP_P1": {
+    #"region_approx": ["occipital"],
+    "tmin": 0.08,
+    "tmax": 0.13
+  },
 
-    "ERP_N1": {
-        
-    },
+  "ERP_N1": {
+    #"region_approx": ["occipital", "frontal"],
+    "tmin": 0.10,
+    "tmax": 0.15
+  },
 
-    "ERP_N170": {
+  "ERP_N170": {
+    #"region_approx": ["temporo-occipital"] # (right > left),
+    "tmin": 0.14,
+    "tmax": 0.20
+  },
 
-    },
+  "ERP_N2": {
+    #"region_approx": "fronto-central",
+    "tmin": 0.20,
+    "tmax": 0.35
+  },
 
-    "ERP_N2": {
+  "ERP_P2": {
+    #"region_approx": "fronto-central",
+    "tmin": 0.15,
+    "tmax": 0.30
+  },
 
-    },
+  "ERP_P3B": {
+    #"region_approx": "parietal (Pz)",
+    "tmin": 0.30,
+    "tmax": 0.60
+  },
 
-    "ERP_P2": {
-    },
+  "ERP_P200": {
+    #"region_approx": "fronto-central",
+    "tmin": 0.15,
+    "tmax": 0.25
+  },
 
-    "ERP_P3B": {
-
-    }, 
-
-    "ERP_P200": {
-
-    },
-
-    "ERP_MMN": {
-
-    }
+  "ERP_MMN": {
+    #"region_approx": "fronto-central (with temporal sources)",
+    "tmin": 0.10,
+    "tmax": 0.25
+  }
 }
 
 
@@ -282,17 +300,9 @@ subjects = ["{subject_label}"]
 conditions = {conditions}
 notch_freq = [25, 50, 100, 150]
 epochs_tmin = -0.2
-epochs_tmax = 1.2
+epochs_tmax = 1.2 # max + some padding for any ERP
 """, encoding="utf-8"
 )
-
-    # mne_bids_pipeline_config_current.bids_root = BIDS_DB_PATH
-    # mne_bids_pipeline_config_current.deriv_root = derivatives_root
-    # mne_bids_pipeline_config_current.sessions = [session_label]
-    # mne_bids_pipeline_config_current.task = session_label
-    # mne_bids_pipeline_config_current.runs = ["01"]
-    # mne_bids_pipeline_config_current.subjects = [subject_label]
-    # mne_bids_pipeline_config_current.conditions = CONDITIONS.keys()
 
     env = os.environ.copy()
     env["PYTHONUTF8"] = "1"
@@ -336,11 +346,18 @@ def mne_pipeline_results_analysis(subject_label:str, session_label:str, results_
     evokeds = {}
     for erp_event in epochs.event_id:
         evokeds[erp_event] = epochs[erp_event].average() 
-    tmin, tmax = 0.1, 0.8 # [seconds] (safe window for all ERPs)
 
-    # Average amplitudes per event shape: (event_count, )
     for erp_event, event_avg_samples_per_channel in evokeds.items():
-        result_erp_amplitudes[erp_event] = event_avg_samples_per_channel.copy().crop(tmin, tmax).data.mean()
+        cropped = event_avg_samples_per_channel.copy().crop(
+            CONDITIONS[erp_event]["tmin"], 
+            CONDITIONS[erp_event]["tmax"]
+        ).data # shape: (channels, timepoints)
+        result_erp_amplitudes[erp_event] = {
+            "positive": cropped.max(),
+            "negative": cropped.min(),
+            "channels-mean": cropped.mean() # mean value across channels 
+        }
+            
 
 
     
