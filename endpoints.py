@@ -2,7 +2,6 @@ from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from pathlib import Path
-from jose import jwt, JWTError, ExpiredSignatureError
 from fastapi import (
     APIRouter, HTTPException,  Response, 
     status, Depends, Form, BackgroundTasks,
