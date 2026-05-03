@@ -94,9 +94,16 @@ CONDITIONS = {
   "ERP_P2": {
     #"region_approx": "fronto-central",
     "tmin": 0.15,
-    "tmax": 0.30
+    "tmax": 0.28
   },
 
+  # same as P2, only for the second stimuli (e.g. in Attentional Blink test)
+  "ERP_P2_2": {
+    #"region_approx": "fronto-central",
+    "tmin": 0.15,
+    "tmax": 0.28
+  },
+  
   "ERP_P3B": {
     #"region_approx": "parietal (Pz)",
     "tmin": 0.30,
