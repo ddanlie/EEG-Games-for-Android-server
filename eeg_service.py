@@ -41,7 +41,7 @@ CHANNELS = {
     },
     "channel_3":{
         "name": "C5",
-        "region_approx": "parietal" # least relevant
+        "region_approx": "temporal" 
     },
     "channel_4":{
         "name": "C1",
@@ -49,7 +49,7 @@ CHANNELS = {
     },
     "channel_5":{
         "name": "C2",
-        "region_approx": "temporal" 
+        "region_approx": "parietal" # least relevant
     },
     "channel_6":{
         "name": "C6",
